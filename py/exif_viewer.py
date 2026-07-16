@@ -1,15 +1,22 @@
 class ExifViewer:
     @classmethod
     def INPUT_TYPES(cls):
-        return {"required": {}}
+        return {
+            "required": {
+                "positive": ("STRING", {"multiline": True, "default": ""}),
+                "negative": ("STRING", {"multiline": True, "default": ""}),
+            }
+        }
 
-    RETURN_TYPES = ()
-    FUNCTION = "noop"
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("positive", "negative")
+    FUNCTION = "get_prompts"
     OUTPUT_NODE = True
     CATEGORY = "utils"
 
-    def noop(self):
-        return {}
+    def get_prompts(self, positive, negative):
+        return (positive, negative)
+
 
 NODE_CLASS_MAPPINGS = {
     "ExifViewer": ExifViewer
