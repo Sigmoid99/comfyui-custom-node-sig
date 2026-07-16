@@ -2156,15 +2156,13 @@ app.registerExtension({
 
 
             this.updatePromptOutputs = function(pos, neg){
-
-                this.widgets_values = [
-                    pos || "",
-                    neg || ""
-                ];
+                if (this.posWidget) this.posWidget.value = pos || "";
+                if (this.negWidget) this.negWidget.value = neg || "";
 
                 this.positiveBox.value = pos || "";
                 this.negativeBox.value = neg || "";
 
+                this.setDirtyCanvas(true, true);
             };
 
             const root = document.createElement("div");
@@ -2227,7 +2225,7 @@ app.registerExtension({
                 "viewer",
                 "div",
                 root,
-                {}
+                { serialize: false },
             );
             const allowDrag = (e) => {
                 e.preventDefault();
@@ -2243,10 +2241,17 @@ app.registerExtension({
             root.addEventListener("dragover", allowDrag);
             root.addEventListener("drop", forwardDrop);
 
-            this.addWidget("text","positive","",(v)=>{},{});
-            this.addWidget("text","negative","",(v)=>{},{});
-            this.widgets[this.widgets.length-2].hidden = true;
-            this.widgets[this.widgets.length-1].hidden = true;
+            // Python INPUT_TYPES(required)로 인해 이미 자동 생성된 위젯을 찾아서 숨김
+            const posWidget = this.widgets.find(w => w.name === "positive");
+            const negWidget = this.widgets.find(w => w.name === "negative");
+
+            function hideWidget(w) {
+                if (!w) return;
+                w.draw = function () {};             // 그리지 않음
+                w.computeSize = function () { return [0, -4]; }; // 공간 차지 안 함
+            }
+            hideWidget(posWidget);
+            hideWidget(negWidget);
         };
 
         nodeType.prototype.onDragOver = function () {
@@ -2495,5 +2500,40 @@ app.registerExtension({
                 return false;
             }
         };
+    },
+    async nodeCreated(node) {
+
+        if (node.comfyClass !== "ExifViewer")
+            return;
+
+        const posWidget = node.widgets.find(w => w.name === "positive");
+        const negWidget = node.widgets.find(w => w.name === "negative");
+
+        node.posWidget = posWidget;
+        node.negWidget = negWidget;
+
+        function fullyHideWidget(w) {
+            if (!w) return;
+
+            w.type = "hidden";
+            w.computeSize = () => [0, -4];
+            w.draw = () => {};
+
+            // 멀티라인 위젯은 실제 <textarea> DOM(inputEl)이 별도로 떠 있음 → 이것도 숨겨야 함
+            if (w.inputEl) {
+                w.inputEl.style.display = "none";
+            }
+
+            // 버전에 따라 element 프로퍼티명이 다를 수 있어 폭넓게 체크
+            if (w.element) {
+                w.element.style.display = "none";
+            }
+        }
+
+        fullyHideWidget(posWidget);
+        fullyHideWidget(negWidget);
+
+        node.setSize(node.computeSize());
+        node.setDirtyCanvas(true, true);
     }
 });
