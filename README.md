@@ -16,6 +16,7 @@ exif viewer v1.1 긍정, 부정 프롬프트 출력 지원
 (positive, negative prompt output added)  
 
 사용법: exif가 있는 이미지를 드래그해서 노드에 넣는다.  
+
 ------------------------------------------------------
 TAG NODE  
   
