@@ -22,8 +22,8 @@ TAG NODE
 __init__.py  
 py/tag_node.py  
 web/tag_node.js  
-web/image
-web/ko_KR.yaml
+web/image  
+web/ko_KR.yaml  
   
 tag node v1.0  
 단어,문장형 지원  
