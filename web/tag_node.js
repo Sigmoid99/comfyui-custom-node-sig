@@ -32,6 +32,7 @@ app.registerExtension({
             textWidget.computeSize = () => [0, 0];
 
             let selectedTags = [];
+            let selectedSeparators = [];
             let currentGroup = null;
             let tagMap = {};
             let tagColorMap = {};
@@ -171,6 +172,7 @@ app.registerExtension({
                         };
                     });
             }
+
             // =========================
             // 🔥 텍스트박스 우클릭 → 자동 번역
             // =========================
@@ -209,7 +211,10 @@ app.registerExtension({
 
                     textarea.value = translated;
                     textWidget.value = translated;
-                    selectedTags = parseFullText(translated);
+
+                    const parsed = parseWithSeparators(translated);   // 🔥 변경
+                    selectedTags = parsed.items;                        // 🔥 변경
+                    selectedSeparators = parsed.separators;              // 🔥 추가
 
                     renderSelected();
                     if (currentGroup) renderTags(currentGroup);
@@ -382,14 +387,31 @@ app.registerExtension({
                 return SENTENCE_HINT_WORDS.test(s) || wordCount >= 4;
             }
 
-            // 🔥 inSentenceContext: 바로 앞 조각이 이미 "문장"으로 판정되어
-            // 현재 문장 버퍼가 채워져 있는 상태인지 여부.
-            // 이미 문장 흐름 중이면, 뒤따르는 짧은 단어(예: "sad", "crying")도
-            // 새로운 태그가 아니라 문장의 연속(형용사/절 등)으로 간주한다.
-            // 단, YAML에 정식 등록된 태그라면 그건 명백한 신호이므로 우선한다.
+            // 🔥 문장 도중에 나온 짧은 구절이 "연속"인지 판별
+            // - 단어 1개(형용사/부사류: sad, crying, alone 등)면 문장의 연속으로 간주
+            // - 힌트 단어가 포함되어 있으면 연속으로 간주
+            // - 그 외(예: "woman sing"처럼 새 주어+동사로 보이는 구)는 새 태그로 분리
+            function looksLikeContinuation(str) {
+                const s = str.trim();
+                if (!s) return false;
+
+                const wordCount = s.split(/\s+/).filter(Boolean).length;
+
+                if (wordCount === 1) return true;
+                if (SENTENCE_HINT_WORDS.test(s)) return true;
+
+                return false;
+            }
+
             function classifySegment(str, inSentenceContext) {
                 if (isKnownTag(str)) return "tag";
-                if (inSentenceContext) return "sentence";
+
+                if (inSentenceContext) {
+                    // 🔥 무조건 이어붙이지 않고, 진짜 연속인지 다시 검사
+                    if (looksLikeContinuation(str)) return "sentence";
+                    return "tag";
+                }
+
                 if (looksLikeSentence(str)) return "sentence";
                 return "tag";
             }
@@ -444,12 +466,53 @@ app.registerExtension({
                 return result;
             }
 
+            function parseWithSeparators(text) {
+                const items = parseFullText(text);
+                const separators = [];
+                let cursor = 0;
+
+                for (let i = 0; i < items.length - 1; i++) {
+                    const cur = items[i];
+                    const next = items[i + 1];
+
+                    const curStart = text.indexOf(cur.raw, cursor);
+                    if (curStart === -1) { separators.push(", "); continue; }
+                    const curEnd = curStart + cur.raw.length;
+
+                    const nextStart = text.indexOf(next.raw, curEnd);
+                    if (nextStart === -1) { separators.push(", "); cursor = curEnd; continue; }
+
+                    separators.push(text.slice(curEnd, nextStart));
+                    cursor = nextStart;
+                }
+
+                return { items, separators };
+            }
+
+            function removeItemAt(index) {
+                if (selectedSeparators.length > 0) {
+                    const sepIndexToRemove = index > 0 ? index - 1 : 0;
+                    selectedSeparators.splice(sepIndexToRemove, 1);
+                }
+                selectedTags.splice(index, 1);
+            }
+
+            function addItem(item) {
+                if (selectedTags.length > 0) {
+                    selectedSeparators.push(", "); // 새로 추가되는 태그는 기본 구분자
+                }
+                selectedTags.push(item);
+            }
+
             function syncFromWidget() {
                 if (!selectedDiv) return; // 안전장치
 
                 const value = textWidget.value || "";
                 textarea.value = value;
-                selectedTags = parseFullText(value);
+
+                const parsed = parseWithSeparators(value);
+                selectedTags = parsed.items;
+                selectedSeparators = parsed.separators;
 
                 renderSelected();
 
@@ -479,8 +542,25 @@ app.registerExtension({
                 return text;
             }
 
+            function buildText(tags, separators) {
+                let text = "";
+                tags.forEach((item, i) => {
+                    text += item.raw;
+                    if (i < tags.length - 1) {
+                        const sep = separators[i];
+                        if (sep !== undefined) {
+                            text += sep; // 🔥 원본 구분자 그대로 사용
+                        } else {
+                            const prevEndsSentence = item.isSentence && /[.!?]\s*$/.test(item.raw);
+                            text += prevEndsSentence ? " " : ", "; // 정보 없을 때만 기본 규칙
+                        }
+                    }
+                });
+                return text;
+            }
+
             function updateText() {
-                const newText = joinTags(selectedTags);
+                const newText = buildText(selectedTags, selectedSeparators);
                 textarea.value = newText;
                 textWidget.value = newText;
                 node.setDirtyCanvas(true);
@@ -504,7 +584,10 @@ app.registerExtension({
             textarea.addEventListener("input", () => {
                 saveHistory(); // 🔥
 
-                selectedTags = parseFullText(textarea.value);
+                const parsed = parseWithSeparators(textarea.value);   // 🔥 변경
+                selectedTags = parsed.items;                            // 🔥 변경
+                selectedSeparators = parsed.separators;                  // 🔥 추가
+
                 renderSelected();
                 if (currentGroup) renderTags(currentGroup);
 
@@ -1003,8 +1086,8 @@ app.registerExtension({
                     chip.onclick = () => {
                         saveHistory();
 
-                        selectedTags = selectedTags.filter((_, i) => i !== index);
                         sentenceTranslationCache.delete(item.raw); // 🔥 칩 삭제 시 캐시도 정리
+                        removeItemAt(index);                        // 🔥 변경
 
                         updateText();
                         renderSelected();
@@ -1053,7 +1136,7 @@ app.registerExtension({
                             container.onclick = () => {
                                 saveHistory();
 
-                                selectedTags = selectedTags.filter((_, i) => i !== index);
+                                removeItemAt(index);
 
                                 updateText();
                                 renderSelected();
@@ -1113,7 +1196,7 @@ app.registerExtension({
 
                         chip.onclick = () => {
                             saveHistory();
-                            selectedTags = selectedTags.filter((_, i) => i !== index);
+                            removeItemAt(index);
                             updateText();
                             renderSelected();
                             if (currentGroup) renderTags(currentGroup);
@@ -1252,7 +1335,7 @@ app.registerExtension({
 
                         if (!selectedTags.some(t => t.clean === item.tag)) {
 
-                            selectedTags.push({
+                            addItem({
                                 raw: item.tag,
                                 clean: item.tag,
                                 isGroup: false
@@ -1638,7 +1721,10 @@ app.registerExtension({
 
                 textarea.value = newText;
                 textWidget.value = newText;
-                selectedTags = parseFullText(newText);
+
+                const parsed = parseWithSeparators(newText);   // 🔥 변경
+                selectedTags = parsed.items;                     // 🔥 변경
+                selectedSeparators = parsed.separators;            // 🔥 추가
 
                 updateText();
                 renderSelected();
@@ -1906,7 +1992,7 @@ app.registerExtension({
                         saveHistory();
 
                         if (!selectedTags.some(t => t.clean === tag)) {
-                            selectedTags.push({
+                            addItem({
                                 raw: tag,
                                 clean: tag,
                                 isGroup: false
