@@ -8,7 +8,7 @@ py/exif_viewer.py
 web/exif_viewer.js  
   
 exif viewer v1.0  
-nai, comfyui, reforge, forgeneo 지원   
+nai (v5 지원), comfyui, reforge, forgeneo 지원   
 (일부 복잡한 comfyui 워크플로우에선 오류가 날 수 있음)  
 (Errors may occur in some complex comfyui workflows)  
    
@@ -30,7 +30,10 @@ tag node v1.0
 단어,문장형 지원  
 컨트롤+z 실행취소, 컨트롤+y 실행복귀  
 구글 번역 지원  
-  
+
+tag node v1.1  
+텍스트박스 초기화 차단  
+
 주의할점  
 노드에서 색깔바꾸는 기능은 실시간 yaml연동이므로 yaml을 수정했다면 저장한다음 써야함  
 그룹안에 같은 요소가 있으면 오류  
