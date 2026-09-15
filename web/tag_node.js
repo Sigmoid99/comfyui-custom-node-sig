@@ -240,7 +240,17 @@ app.registerExtension({
                     body: JSON.stringify({ text, source, target })
                 });
 
-                if (!res.ok) throw new Error("번역 요청 실패");
+                if (!res.ok) {
+                    // 🔥 서버가 준 실제 에러 내용을 그대로 노출 (디버깅용)
+                    let detail = "";
+                    try {
+                        const errBody = await res.json();
+                        detail = errBody.error || JSON.stringify(errBody);
+                    } catch (e) {
+                        detail = await res.text().catch(() => "");
+                    }
+                    throw new Error(`번역 요청 실패 (status ${res.status}): ${detail}`);
+                }
 
                 const data = await res.json();
                 return data.translated || "";
