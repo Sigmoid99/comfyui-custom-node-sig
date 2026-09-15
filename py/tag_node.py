@@ -3,6 +3,7 @@ import os
 import re
 import json
 import aiohttp
+import urllib.parse
 
 from aiohttp import web
 from server import PromptServer
@@ -172,12 +173,122 @@ def update_color_in_yaml_text(text: str, category_name: str, group_name: str, ne
     raise ValueError(f"category '{category_name}' / group '{group_name}' 를 찾을 수 없습니다")
 
 # =========================
-# 🔥 자동 번역기능
+# 🔥 자동 번역기능 (batchexecute 우선 시도 → 실패 시 translate_a/single 폴백)
 # =========================
-GOOGLE_TRANSLATE_URL = "https://translate.googleapis.com/translate_a/single"
+GOOGLE_HOST_URL = "https://translate.google.com"
+GOOGLE_API_PATH = "/_/TranslateWebserverUi/data/batchexecute"
+GOOGLE_CONSENT_HOST = "consent.google.com"
+GOOGLE_RPCID = "MkEWBc"
+
+GOOGLE_SIMPLE_API_URL = "https://translate.googleapis.com/translate_a/single"
+
+COMMON_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 
-async def google_translate(text: str, source: str = "ko", target: str = "en") -> str:
+def _get_rpc_form_data(query_text: str, from_language: str, to_language: str) -> dict:
+    """GoogleV2.get_rpc()와 동일한 방식으로 f.req 페이로드 생성"""
+    param = json.dumps([[query_text, from_language, to_language, True], [1]])
+    rpc = json.dumps([[[GOOGLE_RPCID, param, None, "generic"]]])
+    return {"f.req": rpc}
+
+
+async def _handle_consent_if_needed(session: aiohttp.ClientSession, resp: aiohttp.ClientResponse):
+    """구글이 EU 등에서 쿠키 동의 페이지로 리다이렉트할 때 처리"""
+    if GOOGLE_CONSENT_HOST not in str(resp.url):
+        return await resp.text()
+
+    consent_html = await resp.text()
+    form_data = dict(re.findall(r'<input[^>]*name="([^"]+)"[^>]*value="([^"]*)"', consent_html))
+
+    action_match = re.search(r'<form[^>]*action="([^"]+)"', consent_html)
+    consent_action = action_match.group(1) if action_match else "https://consent.google.com/save"
+
+    async with session.post(
+        consent_action,
+        data=form_data,
+        headers=COMMON_HEADERS,
+        timeout=aiohttp.ClientTimeout(total=10),
+    ) as consent_resp:
+        return await consent_resp.text()
+
+
+async def google_translate_batchexecute(text: str, source: str, target: str) -> str:
+    """
+    translate.google.com 웹페이지 → 쿠키 획득 → RPC 생성 → batchexecute POST → 결과 파싱
+    """
+    api_url = GOOGLE_HOST_URL + GOOGLE_API_PATH
+
+    async with aiohttp.ClientSession(headers=COMMON_HEADERS) as session:
+
+        # 1️⃣ 웹페이지 GET → 쿠키/세션 확보 (consent 페이지가 뜨면 처리)
+        async with session.get(
+            GOOGLE_HOST_URL,
+            timeout=aiohttp.ClientTimeout(total=10),
+            allow_redirects=True,
+        ) as resp:
+            await _handle_consent_if_needed(session, resp)
+
+        # 2️⃣ RPC 페이로드 생성
+        rpc_form = _get_rpc_form_data(text, source, target)
+        rpc_body = urllib.parse.urlencode(rpc_form)
+
+        api_headers = {
+            **COMMON_HEADERS,
+            "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+            "Referer": GOOGLE_HOST_URL + "/",
+            "X-Same-Domain": "1",
+        }
+
+        # 3️⃣ batchexecute POST
+        async with session.post(
+            api_url,
+            data=rpc_body,
+            headers=api_headers,
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as api_resp:
+            api_resp.raise_for_status()
+            raw_text = await api_resp.text()
+
+    # 4️⃣ 응답 파싱
+    lines = raw_text.splitlines()
+
+    json_line = None
+    for line in lines:
+        line = line.strip()
+        if line.startswith('[["wrb.fr"'):
+            json_line = line
+            break
+
+    if json_line is None:
+        raise ValueError("batchexecute 응답에서 JSON 라인을 찾지 못했습니다.")
+
+    outer = json.loads(json_line)
+    inner_json_str = outer[0][2]
+
+    if not inner_json_str:
+        raise ValueError("batchexecute 응답 내부 데이터가 비어있습니다.")
+
+    data = json.loads(inner_json_str)
+
+    segments = data[1][0][0][5] or data[1][0]
+    translated = "".join(seg[0] for seg in segments if seg and seg[0])
+
+    if not translated:
+        raise ValueError("batchexecute 파싱 결과가 비어있습니다.")
+
+    return translated
+
+
+async def google_translate_simple(text: str, source: str, target: str) -> str:
+    """
+    기존 방식 (translate_a/single) - 폴백용
+    """
     params = {
         "client": "gtx",
         "sl": source,
@@ -188,18 +299,32 @@ async def google_translate(text: str, source: str = "ko", target: str = "en") ->
 
     async with aiohttp.ClientSession() as session:
         async with session.get(
-            GOOGLE_TRANSLATE_URL,
+            GOOGLE_SIMPLE_API_URL,
             params=params,
             timeout=aiohttp.ClientTimeout(total=10)
         ) as resp:
             resp.raise_for_status()
-            data = await resp.json(content_type=None)  # 구글이 text/html로 응답하는 경우가 있어 content_type 체크 생략
+            data = await resp.json(content_type=None)
 
-            # 응답 형태: [[["번역결과", "원문", None, None, ...], [...], ...], ...]
             translated = "".join(chunk[0] for chunk in data[0] if chunk[0])
+
+            if not translated:
+                raise ValueError("translate_a/single 파싱 결과가 비어있습니다.")
+
             return translated
 
 
+async def google_translate(text: str, source: str = "ko", target: str = "en") -> str:
+    """
+    1차: batchexecute 방식 시도
+    2차(실패 시): translate_a/single 방식으로 폴백
+    """
+    try:
+        return await google_translate_batchexecute(text, source, target)
+    except Exception as e:
+        print(f"[TagNode] batchexecute 번역 실패, translate_a/single로 폴백: {e}")
+        return await google_translate_simple(text, source, target)
+    
 @PromptServer.instance.routes.post("/tagnode/translate")
 async def translate_text(request):
     try:
@@ -217,6 +342,7 @@ async def translate_text(request):
     except Exception as e:
         print("[TagNode] 번역 실패:", e)
         return web.json_response({"error": str(e)}, status=500)
+
 
 @PromptServer.instance.routes.post("/tagnode/update_color")
 async def update_group_color(request):
